@@ -77,8 +77,10 @@ public class CameraEncoder {
 
     public void startEncoding() {
         if (isEncoding) {
+            Log.w(TAG, "startEncoding called while encoder is already running");
             return;
         }
+        Log.d(TAG, "startEncoding: cameraId=" + cameraId + ", requested size=" + videoSize.getWidth() + "x" + videoSize.getHeight());
         startBackgroundThread();
         openCamera();
         isEncoding = true;
@@ -123,6 +125,7 @@ public class CameraEncoder {
             mediaCodec.start();
 
             Log.d(TAG, "MediaCodec configured: " + videoSize.getWidth() + "x" + videoSize.getHeight());
+            Log.d(TAG, "MediaCodec format: " + format);
         } catch (Exception e) {
             Log.e(TAG, "Error setting up MediaCodec", e);
         }
@@ -149,6 +152,7 @@ public class CameraEncoder {
 
         cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
         try {
+            Log.d(TAG, "Available cameras: " + Arrays.toString(cameraManager.getCameraIdList()));
             CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
             android.hardware.camera2.params.StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if (map != null) {
@@ -166,6 +170,7 @@ public class CameraEncoder {
 
             setupMediaCodec();
 
+            Log.d(TAG, "Opening camera id=" + cameraId + " on thread=" + Thread.currentThread().getName());
             cameraManager.openCamera(cameraId, stateCallback, backgroundHandler);
         } catch (CameraAccessException e) {
             Log.e(TAG, "Error opening camera", e);
@@ -175,18 +180,21 @@ public class CameraEncoder {
     private final CameraDevice.StateCallback stateCallback = new CameraDevice.StateCallback() {
         @Override
         public void onOpened(@NonNull CameraDevice camera) {
+            Log.d(TAG, "Camera opened: " + camera.getId());
             cameraDevice = camera;
             createCaptureSession();
         }
 
         @Override
         public void onDisconnected(@NonNull CameraDevice camera) {
+            Log.w(TAG, "Camera disconnected: " + camera.getId());
             camera.close();
             cameraDevice = null;
         }
 
         @Override
         public void onError(@NonNull CameraDevice camera, int error) {
+            Log.e(TAG, "Camera error: id=" + camera.getId() + ", errorCode=" + error);
             camera.close();
             cameraDevice = null;
         }
@@ -208,6 +216,7 @@ public class CameraEncoder {
                                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
 
                                 captureSession.setRepeatingRequest(builder.build(), null, backgroundHandler);
+                                Log.d(TAG, "Capture session configured, repeating request started");
 
                                 if (onEncoderStartedListener != null) {
                                     onEncoderStartedListener.onEncoderStarted(videoSize.getWidth(), videoSize.getHeight());
@@ -234,6 +243,7 @@ public class CameraEncoder {
     private final Runnable encodeOutputThread = new Runnable() {
         @Override
         public void run() {
+            Log.d(TAG, "encodeOutputThread started");
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
             int frameCount = 0;
             while (isEncoding) {
@@ -244,23 +254,29 @@ public class CameraEncoder {
                     } else if (outputBufferIndex >= 0) {
                         ByteBuffer outputBuffer = mediaCodec.getOutputBuffer(outputBufferIndex);
                         if (outputBuffer != null && bufferInfo.size > 0) {
+                            outputBuffer.position(bufferInfo.offset);
+                            outputBuffer.limit(bufferInfo.offset + bufferInfo.size);
                             byte[] data = new byte[bufferInfo.size];
                             outputBuffer.get(data);
 
                             boolean isKeyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
+                            boolean isCodecConfig = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
                             frameCount++;
-                            Log.d(TAG, "Encoded frame: " + frameCount + ", size: " + bufferInfo.size + ", keyFrame: " + isKeyFrame);
+                            Log.d(TAG, "Encoded frame: " + frameCount + ", size: " + bufferInfo.size + ", keyFrame: " + isKeyFrame + ", codecConfig=" + isCodecConfig + ", pts=" + bufferInfo.presentationTimeUs + ", offset=" + bufferInfo.offset);
 
                             if (onEncodedDataListener != null) {
                                 onEncodedDataListener.onEncodedData(data, bufferInfo.flags, isKeyFrame);
                             }
                         }
                         mediaCodec.releaseOutputBuffer(outputBufferIndex, false);
+                    } else if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                        Log.v(TAG, "Encoder output not ready yet");
                     }
                 } catch (Exception e) {
                     Log.e(TAG, "Error during encoding", e);
                 }
             }
+            Log.d(TAG, "encodeOutputThread stopped");
         }
     };
 
