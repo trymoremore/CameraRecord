@@ -1,0 +1,199 @@
+package com.example.camerarecord;
+
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.util.Log;
+import android.view.Surface;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+
+public class H264Decoder {
+    private static final String TAG = "H264Decoder";
+    private static final String MIME_TYPE = "video/avc";
+    private static final int TIMEOUT_US = 10000;
+    private static final int VIDEO_WIDTH = 1280;
+    private static final int VIDEO_HEIGHT = 720;
+    private static final int QUEUE_CAPACITY = 10;
+
+    private MediaCodec mediaCodec;
+    private Surface outputSurface;
+    private HandlerThread decodeThread;
+    private Handler decodeHandler;
+
+    public boolean isDecoding = false;
+    private BlockingQueue<byte[]> dataQueue;
+
+    private int width = VIDEO_WIDTH;
+    private int height = VIDEO_HEIGHT;
+
+    private OnDecoderListener listener;
+
+    public interface OnDecoderListener {
+        void onDecoderStarted();
+        void onDecoderStopped();
+        void onDecoderError(String error);
+    }
+
+    public H264Decoder() {
+        dataQueue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
+    }
+
+    public boolean isDecoding() {
+        return isDecoding;
+    }
+
+    public void setOnDecoderListener(OnDecoderListener listener) {
+        this.listener = listener;
+    }
+
+    public void setVideoSize(int width, int height) {
+        this.width = width;
+        this.height = height;
+    }
+
+    public Surface getSurface() {
+        return outputSurface;
+    }
+
+    public void startDecoding(String filePath, Surface surface) {
+        if (isDecoding) {
+            Log.w(TAG, "Decoder is already running");
+            return;
+        }
+
+        this.outputSurface = surface;
+
+        startDecodeThread();
+        setupDecoder();
+        isDecoding = true;
+
+        new Thread(decodeRunnable).start();
+
+        if (listener != null) {
+            listener.onDecoderStarted();
+        }
+    }
+
+    public void feedData(byte[] data) {
+        if (isDecoding && data != null && data.length > 0) {
+            try {
+                byte[] copy = new byte[data.length];
+                System.arraycopy(data, 0, copy, 0, data.length);
+                dataQueue.offer(copy);
+            } catch (Exception e) {
+                Log.e(TAG, "Error feeding data", e);
+            }
+        }
+    }
+
+    public void stopDecoding() {
+        isDecoding = false;
+
+        if (decodeHandler != null) {
+            decodeHandler.post(() -> {
+                if (mediaCodec != null) {
+                    try {
+                        mediaCodec.stop();
+                        mediaCodec.release();
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error stopping decoder", e);
+                    }
+                    mediaCodec = null;
+                }
+            });
+        }
+
+        stopDecodeThread();
+
+        dataQueue.clear();
+
+        if (listener != null) {
+            listener.onDecoderStopped();
+        }
+    }
+
+    private void startDecodeThread() {
+        decodeThread = new HandlerThread("H264Decoder");
+        decodeThread.start();
+        decodeHandler = new Handler(decodeThread.getLooper());
+    }
+
+    private void stopDecodeThread() {
+        if (decodeThread != null) {
+            decodeThread.quitSafely();
+            try {
+                decodeThread.join();
+                decodeThread = null;
+                decodeHandler = null;
+            } catch (InterruptedException e) {
+                Log.e(TAG, "Error stopping decode thread", e);
+            }
+        }
+    }
+
+    private void setupDecoder() {
+        try {
+            mediaCodec = MediaCodec.createDecoderByType(MIME_TYPE);
+            MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, width, height);
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+
+            mediaCodec.configure(format, outputSurface, null, 0);
+            mediaCodec.start();
+
+            Log.d(TAG, "Decoder configured successfully");
+        } catch (IOException e) {
+            Log.e(TAG, "Error setting up decoder", e);
+            if (listener != null) {
+                listener.onDecoderError("Failed to setup decoder: " + e.getMessage());
+            }
+        }
+    }
+
+    private final Runnable decodeRunnable = new Runnable() {
+        @Override
+        public void run() {
+            ByteBuffer[] inputBuffers = mediaCodec.getInputBuffers();
+            MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+            long presentationTimeUs = 0;
+
+            while (isDecoding) {
+                try {
+                    int inputBufferIndex = mediaCodec.dequeueInputBuffer(TIMEOUT_US);
+                    if (inputBufferIndex >= 0) {
+                        ByteBuffer inputBuffer = inputBuffers[inputBufferIndex];
+                        inputBuffer.clear();
+
+                        byte[] data = dataQueue.poll();
+                        if (data != null) {
+                            inputBuffer.put(data);
+                            mediaCodec.queueInputBuffer(inputBufferIndex, 0, data.length, presentationTimeUs, 0);
+                            presentationTimeUs += 33333;
+                        }
+                    }
+
+                    int outputBufferIndex = mediaCodec.dequeueOutputBuffer(bufferInfo, TIMEOUT_US);
+                    if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        MediaFormat newFormat = mediaCodec.getOutputFormat();
+                        Log.d(TAG, "Output format changed: " + newFormat);
+                        if (newFormat.containsKey(MediaFormat.KEY_WIDTH)) {
+                            width = newFormat.getInteger(MediaFormat.KEY_WIDTH);
+                        }
+                        if (newFormat.containsKey(MediaFormat.KEY_HEIGHT)) {
+                            height = newFormat.getInteger(MediaFormat.KEY_HEIGHT);
+                        }
+                    } else if (outputBufferIndex >= 0) {
+                        mediaCodec.releaseOutputBuffer(outputBufferIndex, true);
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Error during decoding", e);
+                }
+            }
+        }
+    };
+}
