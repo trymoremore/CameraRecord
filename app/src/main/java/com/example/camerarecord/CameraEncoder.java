@@ -48,7 +48,7 @@ public class CameraEncoder {
     private OnEncoderStartedListener onEncoderStartedListener;
 
     public interface OnEncodedDataListener {
-        void onEncodedData(byte[] data, boolean isKeyFrame);
+        void onEncodedData(byte[] data, int flags, boolean isKeyFrame);
     }
 
     public interface OnEncoderStartedListener {
@@ -252,7 +252,7 @@ public class CameraEncoder {
                             Log.d(TAG, "Encoded frame: " + frameCount + ", size: " + bufferInfo.size + ", keyFrame: " + isKeyFrame);
 
                             if (onEncodedDataListener != null) {
-                                onEncodedDataListener.onEncodedData(data, isKeyFrame);
+                                onEncodedDataListener.onEncodedData(data, bufferInfo.flags, isKeyFrame);
                             }
                         }
                         mediaCodec.releaseOutputBuffer(outputBufferIndex, false);

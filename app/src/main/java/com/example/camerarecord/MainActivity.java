@@ -105,11 +105,11 @@ public class MainActivity extends AppCompatActivity {
         cameraEncoder.setOnEncodedDataListener(new CameraEncoder.OnEncodedDataListener() {
             private int count = 0;
             @Override
-            public void onEncodedData(byte[] data, boolean isKeyFrame) {
+            public void onEncodedData(byte[] data, int flags, boolean isKeyFrame) {
                 count++;
-                Log.d(TAG, "Encoder callback: frame " + count + ", size: " + data.length + ", keyFrame: " + isKeyFrame);
+                Log.d(TAG, "Encoder callback: frame " + count + ", size: " + data.length + ", flags: " + flags + ", keyFrame: " + isKeyFrame);
                 if (h264Decoder != null && h264Decoder.isDecoding()) {
-                    h264Decoder.feedData(data);
+                    h264Decoder.feedData(data, flags);
                 }
             }
         });
