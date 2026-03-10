@@ -4,6 +4,7 @@ import android.Manifest;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.Display;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -29,6 +30,7 @@ public class MainActivity extends AppCompatActivity {
     private int videoWidth = 640;
     private int videoHeight = 480;
     private int sensorOrientation = 0;
+    private int lensFacing = android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -105,11 +107,12 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, "Surface ready, starting camera pipeline...");
         
         cameraEncoder = new CameraEncoder(this);
-        cameraEncoder.setOnEncoderStartedListener((width, height, orientation) -> {
+        cameraEncoder.setOnEncoderStartedListener((width, height, orientation, facing) -> {
             videoWidth = width;
             videoHeight = height;
             sensorOrientation = orientation;
-            Log.d(TAG, "Encoder started with size: " + width + "x" + height + ", sensorOrientation=" + sensorOrientation);
+            lensFacing = facing;
+            Log.d(TAG, "Encoder started with size: " + width + "x" + height + ", sensorOrientation=" + sensorOrientation + ", lensFacing=" + lensFacing);
             startDecoder();
         });
         cameraEncoder.setOnEncodedDataListener(new CameraEncoder.OnEncodedDataListener() {
@@ -137,9 +140,9 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, "Starting decoder with size: " + videoWidth + "x" + videoHeight);
         Log.d(TAG, "Decoder surface valid: " + (decoderSurface != null && decoderSurface.isValid()));
         
-        float correctionRotation = sensorOrientation == 90 ? -90f : (sensorOrientation == 270 ? 90f : 0f);
+        float correctionRotation = calculatePreviewRotationDegrees();
         surfaceView.setRotation(correctionRotation);
-        Log.d(TAG, "Applied surface rotation correction: " + correctionRotation);
+        Log.d(TAG, "Applied surface rotation correction: " + correctionRotation + " degrees");
 
         h264Decoder = new H264Decoder();
         h264Decoder.setVideoSize(videoWidth, videoHeight);
@@ -161,6 +164,42 @@ public class MainActivity extends AppCompatActivity {
         });
 
         h264Decoder.startDecoding(null, decoderSurface);
+    }
+
+    private float calculatePreviewRotationDegrees() {
+        Display display = getWindowManager().getDefaultDisplay();
+        int displayRotation = display != null ? display.getRotation() : Surface.ROTATION_0;
+
+        int deviceDegrees;
+        switch (displayRotation) {
+            case Surface.ROTATION_90:
+                deviceDegrees = 90;
+                break;
+            case Surface.ROTATION_180:
+                deviceDegrees = 180;
+                break;
+            case Surface.ROTATION_270:
+                deviceDegrees = 270;
+                break;
+            case Surface.ROTATION_0:
+            default:
+                deviceDegrees = 0;
+                break;
+        }
+
+        int neededRotation;
+        if (lensFacing == android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT) {
+            neededRotation = (sensorOrientation + deviceDegrees) % 360;
+            neededRotation = (360 - neededRotation) % 360;
+        } else {
+            neededRotation = (sensorOrientation - deviceDegrees + 360) % 360;
+        }
+
+        Log.d(TAG, "calculatePreviewRotationDegrees: sensor=" + sensorOrientation
+                + ", device=" + deviceDegrees
+                + ", lensFacing=" + lensFacing
+                + ", neededRotation=" + neededRotation);
+        return neededRotation;
     }
 
     private void stopCamera() {
