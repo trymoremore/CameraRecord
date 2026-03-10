@@ -41,14 +41,18 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void surfaceCreated(@NonNull SurfaceHolder holder) {
                 decoderSurface = holder.getSurface();
+                Log.d(TAG, "surfaceCreated: valid=" + (decoderSurface != null && decoderSurface.isValid()));
             }
 
             @Override
             public void surfaceChanged(@NonNull SurfaceHolder holder, int format, int width, int height) {
+                Log.d(TAG, "surfaceChanged: format=" + format + ", size=" + width + "x" + height);
             }
 
             @Override
             public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
+                Log.d(TAG, "surfaceDestroyed");
+                decoderSurface = null;
             }
         });
 
@@ -69,10 +73,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean checkCameraPermission() {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+        boolean granted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+        Log.d(TAG, "checkCameraPermission: " + granted);
+        return granted;
     }
 
     private void requestCameraPermission() {
+        Log.d(TAG, "requestCameraPermission");
         ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA_PERMISSION);
     }
 
@@ -80,6 +87,7 @@ public class MainActivity extends AppCompatActivity {
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_CAMERA_PERMISSION) {
+            Log.d(TAG, "onRequestPermissionsResult: result=" + (grantResults.length > 0 ? grantResults[0] : -1));
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 startCamera();
             }
@@ -110,6 +118,8 @@ public class MainActivity extends AppCompatActivity {
                 Log.d(TAG, "Encoder callback: frame " + count + ", size: " + data.length + ", flags: " + flags + ", keyFrame: " + isKeyFrame);
                 if (h264Decoder != null && h264Decoder.isDecoding()) {
                     h264Decoder.feedData(data, flags);
+                } else {
+                    Log.w(TAG, "Decoder not ready, dropping frame " + count + ", flags=" + flags);
                 }
             }
         });
@@ -148,6 +158,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void stopCamera() {
+        Log.d(TAG, "stopCamera called, isRunning=" + isRunning);
         if (cameraEncoder != null) {
             cameraEncoder.stopEncoding();
             cameraEncoder = null;

@@ -77,6 +77,8 @@ public class H264Decoder {
             return;
         }
 
+        Log.d(TAG, "startDecoding: target surface valid=" + (surface != null && surface.isValid()) + ", size=" + width + "x" + height);
+
         this.outputSurface = surface;
 
         startDecodeThread();
@@ -96,6 +98,9 @@ public class H264Decoder {
                 byte[] copy = new byte[data.length];
                 System.arraycopy(data, 0, copy, 0, data.length);
                 boolean offered = dataQueue.offer(new EncodedPacket(copy, flags));
+                if (!offered) {
+                    Log.w(TAG, "feedData queue full, dropping packet size=" + data.length + ", flags=" + flags);
+                }
                 Log.v(TAG, "feedData: " + data.length + " bytes, flags: " + flags + ", queue size: " + dataQueue.size() + ", offered: " + offered);
             } catch (Exception e) {
                 Log.e(TAG, "Error feeding data", e);
@@ -157,7 +162,7 @@ public class H264Decoder {
             mediaCodec.configure(format, outputSurface, null, 0);
             mediaCodec.start();
 
-            Log.d(TAG, "Decoder configured successfully");
+            Log.d(TAG, "Decoder configured successfully with format=" + format);
         } catch (IOException e) {
             Log.e(TAG, "Error setting up decoder", e);
             if (listener != null) {
@@ -169,26 +174,28 @@ public class H264Decoder {
     private final Runnable decodeRunnable = new Runnable() {
         @Override
         public void run() {
-            ByteBuffer[] inputBuffers = mediaCodec.getInputBuffers();
+            Log.d(TAG, "decodeRunnable started");
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
             long presentationTimeUs = 0;
             int frameCount = 0;
             int decodeErrorCount = 0;
             while (isDecoding) {
                 try {
-                    int inputBufferIndex = mediaCodec.dequeueInputBuffer(TIMEOUT_US);
-                    if (inputBufferIndex >= 0) {
-                        ByteBuffer inputBuffer = inputBuffers[inputBufferIndex];
-                        inputBuffer.clear();
-
-                        EncodedPacket packet = dataQueue.poll();
-                        if (packet != null) {
-                            inputBuffer.put(packet.data);
-                            mediaCodec.queueInputBuffer(inputBufferIndex, 0, packet.data.length, presentationTimeUs, packet.flags);
-                            presentationTimeUs += 33333;
-                            Log.v(TAG, "Queued data, size: " + packet.data.length + ", flags: " + packet.flags + ", queue size: " + dataQueue.size() + ", pts: " + presentationTimeUs);
-                        } else {
-                            Log.v(TAG, "No data in queue, waiting...");
+                    EncodedPacket packet = dataQueue.poll();
+                    if (packet != null) {
+                        int inputBufferIndex = mediaCodec.dequeueInputBuffer(TIMEOUT_US);
+                        if (inputBufferIndex >= 0) {
+                            ByteBuffer inputBuffer = mediaCodec.getInputBuffer(inputBufferIndex);
+                            if (inputBuffer != null) {
+                                inputBuffer.clear();
+                                inputBuffer.put(packet.data);
+                                mediaCodec.queueInputBuffer(inputBufferIndex, 0, packet.data.length, presentationTimeUs, packet.flags);
+                                presentationTimeUs += 33333;
+                                Log.v(TAG, "Queued data, size: " + packet.data.length + ", flags: " + packet.flags + ", queue size: " + dataQueue.size() + ", pts: " + presentationTimeUs);
+                            }
+                        } else if (inputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                            Log.v(TAG, "No input buffer available, keep packet for next round");
+                            dataQueue.offer(packet);
                         }
                     }
 
@@ -229,6 +236,7 @@ public class H264Decoder {
                     Log.e(TAG, "Error during decoding", e);
                 }
             }
+            Log.d(TAG, "decodeRunnable stopped");
         }
     };
 }
