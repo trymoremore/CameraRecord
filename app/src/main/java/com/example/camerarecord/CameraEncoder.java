@@ -3,15 +3,12 @@ package com.example.camerarecord;
 import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.graphics.ImageFormat;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
-import android.media.Image;
-import android.media.ImageReader;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
@@ -24,7 +21,6 @@ import android.view.Surface;
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 
@@ -39,19 +35,24 @@ public class CameraEncoder {
     private CameraManager cameraManager;
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
-    private ImageReader imageReader;
     private MediaCodec mediaCodec;
     private HandlerThread backgroundThread;
     private Handler backgroundHandler;
 
     private boolean isEncoding = false;
-    private String cameraId = "0";
+    private String cameraId = "1";
     private Size videoSize = new Size(1280, 720);
+    private Surface encoderSurface;
 
     private OnEncodedDataListener onEncodedDataListener;
+    private OnEncoderStartedListener onEncoderStartedListener;
 
     public interface OnEncodedDataListener {
         void onEncodedData(byte[] data, boolean isKeyFrame);
+    }
+
+    public interface OnEncoderStartedListener {
+        void onEncoderStarted(int width, int height);
     }
 
     public CameraEncoder(Context context) {
@@ -60,6 +61,10 @@ public class CameraEncoder {
 
     public void setOnEncodedDataListener(OnEncodedDataListener listener) {
         this.onEncodedDataListener = listener;
+    }
+
+    public void setOnEncoderStartedListener(OnEncoderStartedListener listener) {
+        this.onEncoderStartedListener = listener;
     }
 
     public void setCameraId(String cameraId) {
@@ -75,7 +80,6 @@ public class CameraEncoder {
             return;
         }
         startBackgroundThread();
-        setupMediaCodec();
         openCamera();
         isEncoding = true;
     }
@@ -83,7 +87,6 @@ public class CameraEncoder {
     public void stopEncoding() {
         isEncoding = false;
         closeCamera();
-        stopMediaCodec();
         stopBackgroundThread();
     }
 
@@ -116,10 +119,11 @@ public class CameraEncoder {
 
             mediaCodec = MediaCodec.createEncoderByType(MIME_TYPE);
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            encoderSurface = mediaCodec.createInputSurface();
             mediaCodec.start();
 
-            Log.d(TAG, "MediaCodec configured successfully");
-        } catch (IOException e) {
+            Log.d(TAG, "MediaCodec configured: " + videoSize.getWidth() + "x" + videoSize.getHeight());
+        } catch (Exception e) {
             Log.e(TAG, "Error setting up MediaCodec", e);
         }
     }
@@ -133,6 +137,7 @@ public class CameraEncoder {
                 Log.e(TAG, "Error stopping MediaCodec", e);
             }
             mediaCodec = null;
+            encoderSurface = null;
         }
     }
 
@@ -147,17 +152,19 @@ public class CameraEncoder {
             CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
             android.hardware.camera2.params.StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if (map != null) {
-                videoSize = map.getOutputSizes(ImageFormat.YUV_420_888)[0];
-                for (Size size : map.getOutputSizes(ImageFormat.YUV_420_888)) {
-                    if (size.getWidth() == 1280 && size.getHeight() == 720) {
-                        videoSize = size;
-                        break;
+                Size[] sizes = map.getOutputSizes(Surface.class);
+                if (sizes != null && sizes.length > 0) {
+                    for (Size size : sizes) {
+                        if (size.getWidth() <= 1280 && size.getHeight() <= 720) {
+                            videoSize = size;
+                            break;
+                        }
                     }
+                    Log.d(TAG, "Using video size: " + videoSize.getWidth() + "x" + videoSize.getHeight());
                 }
             }
 
-            imageReader = ImageReader.newInstance(videoSize.getWidth(), videoSize.getHeight(), ImageFormat.YUV_420_888, 2);
-            imageReader.setOnImageAvailableListener(onImageAvailableListener, backgroundHandler);
+            setupMediaCodec();
 
             cameraManager.openCamera(cameraId, stateCallback, backgroundHandler);
         } catch (CameraAccessException e) {
@@ -187,10 +194,8 @@ public class CameraEncoder {
 
     private void createCaptureSession() {
         try {
-            Surface encoderSurface = mediaCodec.createInputSurface();
-
             cameraDevice.createCaptureSession(
-                    Arrays.asList(imageReader.getSurface(), encoderSurface),
+                    Arrays.asList(encoderSurface),
                     new CameraCaptureSession.StateCallback() {
                         @Override
                         public void onConfigured(@NonNull CameraCaptureSession session) {
@@ -198,12 +203,15 @@ public class CameraEncoder {
                             try {
                                 CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
                                 builder.addTarget(encoderSurface);
-                                builder.addTarget(imageReader.getSurface());
 
                                 builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
                                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
 
                                 captureSession.setRepeatingRequest(builder.build(), null, backgroundHandler);
+
+                                if (onEncoderStartedListener != null) {
+                                    onEncoderStartedListener.onEncoderStarted(videoSize.getWidth(), videoSize.getHeight());
+                                }
 
                                 new Thread(encodeOutputThread).start();
                             } catch (CameraAccessException e) {
@@ -223,79 +231,34 @@ public class CameraEncoder {
         }
     }
 
-    private final ImageReader.OnImageAvailableListener onImageAvailableListener = new ImageReader.OnImageAvailableListener() {
-        @Override
-        public void onImageAvailable(ImageReader reader) {
-            Image image = reader.acquireLatestImage();
-            if (image != null) {
-                feedImageToEncoder(image);
-                image.close();
-            }
-        }
-    };
-
-    private void feedImageToEncoder(Image image) {
-        if (mediaCodec == null) return;
-
-        try {
-            ByteBuffer[] inputBuffers = mediaCodec.getInputBuffers();
-            int inputBufferIndex = mediaCodec.dequeueInputBuffer(10000);
-            if (inputBufferIndex >= 0) {
-                ByteBuffer inputBuffer = inputBuffers[inputBufferIndex];
-                inputBuffer.clear();
-
-                Image.Plane[] planes = image.getPlanes();
-                ByteBuffer yBuffer = planes[0].getBuffer();
-                ByteBuffer uBuffer = planes[1].getBuffer();
-                ByteBuffer vBuffer = planes[2].getBuffer();
-
-                byte[] yData = new byte[yBuffer.remaining()];
-                byte[] uData = new byte[uBuffer.remaining()];
-                byte[] vData = new byte[vBuffer.remaining()];
-
-                yBuffer.get(yData);
-                uBuffer.get(uData);
-                vBuffer.get(vData);
-
-                int ySize = yData.length;
-                int uSize = uData.length;
-                int vSize = vData.length;
-
-                byte[] nv12 = new byte[ySize + uSize + vSize];
-                System.arraycopy(yData, 0, nv12, 0, ySize);
-                System.arraycopy(uData, 0, nv12, ySize, uSize);
-                System.arraycopy(vData, 0, nv12, ySize + uSize, vSize);
-
-                inputBuffer.put(nv12);
-                long presentationTimeUs = System.nanoTime() / 1000;
-                mediaCodec.queueInputBuffer(inputBufferIndex, 0, nv12.length, presentationTimeUs, 0);
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Error feeding image to encoder", e);
-        }
-    }
-
     private final Runnable encodeOutputThread = new Runnable() {
         @Override
         public void run() {
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+            int frameCount = 0;
             while (isEncoding) {
-                int outputBufferIndex = mediaCodec.dequeueOutputBuffer(bufferInfo, 10000);
-                if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    Log.d(TAG, "Output format changed: " + mediaCodec.getOutputFormat());
-                } else if (outputBufferIndex >= 0) {
-                    ByteBuffer outputBuffer = mediaCodec.getOutputBuffer(outputBufferIndex);
-                    if (outputBuffer != null && bufferInfo.size > 0) {
-                        byte[] data = new byte[bufferInfo.size];
-                        outputBuffer.get(data);
+                try {
+                    int outputBufferIndex = mediaCodec.dequeueOutputBuffer(bufferInfo, 10000);
+                    if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        Log.d(TAG, "Output format changed: " + mediaCodec.getOutputFormat());
+                    } else if (outputBufferIndex >= 0) {
+                        ByteBuffer outputBuffer = mediaCodec.getOutputBuffer(outputBufferIndex);
+                        if (outputBuffer != null && bufferInfo.size > 0) {
+                            byte[] data = new byte[bufferInfo.size];
+                            outputBuffer.get(data);
 
-                        boolean isKeyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
+                            boolean isKeyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
+                            frameCount++;
+                            Log.d(TAG, "Encoded frame: " + frameCount + ", size: " + bufferInfo.size + ", keyFrame: " + isKeyFrame);
 
-                        if (onEncodedDataListener != null) {
-                            onEncodedDataListener.onEncodedData(data, isKeyFrame);
+                            if (onEncodedDataListener != null) {
+                                onEncodedDataListener.onEncodedData(data, isKeyFrame);
+                            }
                         }
+                        mediaCodec.releaseOutputBuffer(outputBufferIndex, false);
                     }
-                    mediaCodec.releaseOutputBuffer(outputBufferIndex, false);
+                } catch (Exception e) {
+                    Log.e(TAG, "Error during encoding", e);
                 }
             }
         }
@@ -310,9 +273,6 @@ public class CameraEncoder {
             cameraDevice.close();
             cameraDevice = null;
         }
-        if (imageReader != null) {
-            imageReader.close();
-            imageReader = null;
-        }
+        stopMediaCodec();
     }
 }

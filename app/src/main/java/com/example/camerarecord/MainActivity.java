@@ -2,7 +2,6 @@ package com.example.camerarecord;
 
 import android.Manifest;
 import android.content.pm.PackageManager;
-import android.graphics.SurfaceTexture;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.Surface;
@@ -27,6 +26,8 @@ public class MainActivity extends AppCompatActivity {
 
     private boolean isRunning = false;
     private Surface decoderSurface;
+    private int videoWidth = 640;
+    private int videoHeight = 480;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -87,11 +88,45 @@ public class MainActivity extends AppCompatActivity {
 
     private void startCamera() {
         if (decoderSurface == null || !decoderSurface.isValid()) {
-            Log.e(TAG, "Surface not ready");
+            Log.e(TAG, "Surface not ready, waiting...");
+            surfaceView.postDelayed(this::startCamera, 100);
             return;
         }
 
+        Log.d(TAG, "Surface ready, starting camera pipeline...");
+        
+        cameraEncoder = new CameraEncoder(this);
+        cameraEncoder.setOnEncoderStartedListener((width, height) -> {
+            videoWidth = width;
+            videoHeight = height;
+            Log.d(TAG, "Encoder started with size: " + width + "x" + height);
+            startDecoder();
+        });
+        cameraEncoder.setOnEncodedDataListener(new CameraEncoder.OnEncodedDataListener() {
+            private int count = 0;
+            @Override
+            public void onEncodedData(byte[] data, boolean isKeyFrame) {
+                count++;
+                Log.d(TAG, "Encoder callback: frame " + count + ", size: " + data.length + ", keyFrame: " + isKeyFrame);
+                if (h264Decoder != null && h264Decoder.isDecoding()) {
+                    h264Decoder.feedData(data);
+                }
+            }
+        });
+
+        Log.d(TAG, "Starting encoder...");
+        cameraEncoder.startEncoding();
+
+        isRunning = true;
+        btnStart.setText("Stop");
+    }
+
+    private void startDecoder() {
+        Log.d(TAG, "Starting decoder with size: " + videoWidth + "x" + videoHeight);
+        Log.d(TAG, "Decoder surface valid: " + (decoderSurface != null && decoderSurface.isValid()));
+        
         h264Decoder = new H264Decoder();
+        h264Decoder.setVideoSize(videoWidth, videoHeight);
         h264Decoder.setOnDecoderListener(new H264Decoder.OnDecoderListener() {
             @Override
             public void onDecoderStarted() {
@@ -109,21 +144,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        cameraEncoder = new CameraEncoder(this);
-        cameraEncoder.setOnEncodedDataListener(new CameraEncoder.OnEncodedDataListener() {
-            @Override
-            public void onEncodedData(byte[] data, boolean isKeyFrame) {
-                if (h264Decoder != null && h264Decoder.isDecoding()) {
-                    h264Decoder.feedData(data);
-                }
-            }
-        });
-
         h264Decoder.startDecoding(null, decoderSurface);
-        cameraEncoder.startEncoding();
-
-        isRunning = true;
-        btnStart.setText("Stop");
     }
 
     private void stopCamera() {

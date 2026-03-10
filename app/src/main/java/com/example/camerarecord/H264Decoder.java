@@ -19,7 +19,7 @@ public class H264Decoder {
     private static final int TIMEOUT_US = 10000;
     private static final int VIDEO_WIDTH = 1280;
     private static final int VIDEO_HEIGHT = 720;
-    private static final int QUEUE_CAPACITY = 10;
+    private static final int QUEUE_CAPACITY = 30;
 
     private MediaCodec mediaCodec;
     private Surface outputSurface;
@@ -85,7 +85,8 @@ public class H264Decoder {
             try {
                 byte[] copy = new byte[data.length];
                 System.arraycopy(data, 0, copy, 0, data.length);
-                dataQueue.offer(copy);
+                boolean offered = dataQueue.offer(copy);
+                Log.v(TAG, "feedData: " + data.length + " bytes, queue size: " + dataQueue.size() + ", offered: " + offered);
             } catch (Exception e) {
                 Log.e(TAG, "Error feeding data", e);
             }
@@ -161,6 +162,9 @@ public class H264Decoder {
             ByteBuffer[] inputBuffers = mediaCodec.getInputBuffers();
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
             long presentationTimeUs = 0;
+            int frameCount = 0;
+            int decodeErrorCount = 0;
+            boolean waitingForKeyFrame = true;
 
             while (isDecoding) {
                 try {
@@ -174,6 +178,9 @@ public class H264Decoder {
                             inputBuffer.put(data);
                             mediaCodec.queueInputBuffer(inputBufferIndex, 0, data.length, presentationTimeUs, 0);
                             presentationTimeUs += 33333;
+                            Log.v(TAG, "Queued data, size: " + data.length + ", queue size: " + dataQueue.size() + ", pts: " + presentationTimeUs);
+                        } else {
+                            Log.v(TAG, "No data in queue, waiting...");
                         }
                     }
 
@@ -188,8 +195,29 @@ public class H264Decoder {
                             height = newFormat.getInteger(MediaFormat.KEY_HEIGHT);
                         }
                     } else if (outputBufferIndex >= 0) {
+                        frameCount++;
+                        if (frameCount % 30 == 0) {
+                            Log.d(TAG, "Decoded frame: " + frameCount + ", size: " + bufferInfo.size + ", pts: " + bufferInfo.presentationTimeUs);
+                        }
                         mediaCodec.releaseOutputBuffer(outputBufferIndex, true);
-                    }
+                        waitingForKeyFrame = false;
+                    } else if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                        decodeErrorCount++;
+                        if (decodeErrorCount % 60 == 0) {
+                            Log.w(TAG, "No output buffer available, count: " + decodeErrorCount + ", queue: " + dataQueue.size());
+                        }
+                        } else {
+                            decodeErrorCount++;
+                            if (decodeErrorCount % 60 == 0) {
+                                Log.w(TAG, "Unknown output: " + outputBufferIndex + ", count: " + decodeErrorCount);
+                            }
+                        }
+                        
+                        try {
+                            Thread.sleep(1);
+                        } catch (InterruptedException e) {
+                            break;
+                        }
                 } catch (Exception e) {
                     Log.e(TAG, "Error during decoding", e);
                 }
