@@ -28,6 +28,7 @@ public class MainActivity extends AppCompatActivity {
     private Surface decoderSurface;
     private int videoWidth = 640;
     private int videoHeight = 480;
+    private int sensorOrientation = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -104,10 +105,11 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, "Surface ready, starting camera pipeline...");
         
         cameraEncoder = new CameraEncoder(this);
-        cameraEncoder.setOnEncoderStartedListener((width, height) -> {
+        cameraEncoder.setOnEncoderStartedListener((width, height, orientation) -> {
             videoWidth = width;
             videoHeight = height;
-            Log.d(TAG, "Encoder started with size: " + width + "x" + height);
+            sensorOrientation = orientation;
+            Log.d(TAG, "Encoder started with size: " + width + "x" + height + ", sensorOrientation=" + sensorOrientation);
             startDecoder();
         });
         cameraEncoder.setOnEncodedDataListener(new CameraEncoder.OnEncodedDataListener() {
@@ -135,6 +137,10 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, "Starting decoder with size: " + videoWidth + "x" + videoHeight);
         Log.d(TAG, "Decoder surface valid: " + (decoderSurface != null && decoderSurface.isValid()));
         
+        float correctionRotation = sensorOrientation == 90 ? -90f : (sensorOrientation == 270 ? 90f : 0f);
+        surfaceView.setRotation(correctionRotation);
+        Log.d(TAG, "Applied surface rotation correction: " + correctionRotation);
+
         h264Decoder = new H264Decoder();
         h264Decoder.setVideoSize(videoWidth, videoHeight);
         h264Decoder.setOnDecoderListener(new H264Decoder.OnDecoderListener() {
