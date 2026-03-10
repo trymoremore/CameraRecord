@@ -27,7 +27,7 @@ public class H264Decoder {
     private Handler decodeHandler;
 
     public boolean isDecoding = false;
-    private BlockingQueue<byte[]> dataQueue;
+    private BlockingQueue<EncodedPacket> dataQueue;
 
     private int width = VIDEO_WIDTH;
     private int height = VIDEO_HEIGHT;
@@ -38,6 +38,16 @@ public class H264Decoder {
         void onDecoderStarted();
         void onDecoderStopped();
         void onDecoderError(String error);
+    }
+
+    private static class EncodedPacket {
+        final byte[] data;
+        final int flags;
+
+        EncodedPacket(byte[] data, int flags) {
+            this.data = data;
+            this.flags = flags;
+        }
     }
 
     public H264Decoder() {
@@ -80,13 +90,13 @@ public class H264Decoder {
         }
     }
 
-    public void feedData(byte[] data) {
+    public void feedData(byte[] data, int flags) {
         if (isDecoding && data != null && data.length > 0) {
             try {
                 byte[] copy = new byte[data.length];
                 System.arraycopy(data, 0, copy, 0, data.length);
-                boolean offered = dataQueue.offer(copy);
-                Log.v(TAG, "feedData: " + data.length + " bytes, queue size: " + dataQueue.size() + ", offered: " + offered);
+                boolean offered = dataQueue.offer(new EncodedPacket(copy, flags));
+                Log.v(TAG, "feedData: " + data.length + " bytes, flags: " + flags + ", queue size: " + dataQueue.size() + ", offered: " + offered);
             } catch (Exception e) {
                 Log.e(TAG, "Error feeding data", e);
             }
@@ -164,8 +174,6 @@ public class H264Decoder {
             long presentationTimeUs = 0;
             int frameCount = 0;
             int decodeErrorCount = 0;
-            boolean waitingForKeyFrame = true;
-
             while (isDecoding) {
                 try {
                     int inputBufferIndex = mediaCodec.dequeueInputBuffer(TIMEOUT_US);
@@ -173,12 +181,12 @@ public class H264Decoder {
                         ByteBuffer inputBuffer = inputBuffers[inputBufferIndex];
                         inputBuffer.clear();
 
-                        byte[] data = dataQueue.poll();
-                        if (data != null) {
-                            inputBuffer.put(data);
-                            mediaCodec.queueInputBuffer(inputBufferIndex, 0, data.length, presentationTimeUs, 0);
+                        EncodedPacket packet = dataQueue.poll();
+                        if (packet != null) {
+                            inputBuffer.put(packet.data);
+                            mediaCodec.queueInputBuffer(inputBufferIndex, 0, packet.data.length, presentationTimeUs, packet.flags);
                             presentationTimeUs += 33333;
-                            Log.v(TAG, "Queued data, size: " + data.length + ", queue size: " + dataQueue.size() + ", pts: " + presentationTimeUs);
+                            Log.v(TAG, "Queued data, size: " + packet.data.length + ", flags: " + packet.flags + ", queue size: " + dataQueue.size() + ", pts: " + presentationTimeUs);
                         } else {
                             Log.v(TAG, "No data in queue, waiting...");
                         }
@@ -200,7 +208,6 @@ public class H264Decoder {
                             Log.d(TAG, "Decoded frame: " + frameCount + ", size: " + bufferInfo.size + ", pts: " + bufferInfo.presentationTimeUs);
                         }
                         mediaCodec.releaseOutputBuffer(outputBufferIndex, true);
-                        waitingForKeyFrame = false;
                     } else if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
                         decodeErrorCount++;
                         if (decodeErrorCount % 60 == 0) {
