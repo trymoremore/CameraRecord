@@ -43,6 +43,8 @@ public class CameraEncoder {
     private String cameraId = "1";
     private Size videoSize = new Size(1280, 720);
     private Surface encoderSurface;
+    private int sensorOrientation = 0;
+    private int lensFacing = CameraCharacteristics.LENS_FACING_BACK;
 
     private OnEncodedDataListener onEncodedDataListener;
     private OnEncoderStartedListener onEncoderStartedListener;
@@ -52,7 +54,7 @@ public class CameraEncoder {
     }
 
     public interface OnEncoderStartedListener {
-        void onEncoderStarted(int width, int height);
+        void onEncoderStarted(int width, int height, int sensorOrientation, int lensFacing);
     }
 
     public CameraEncoder(Context context) {
@@ -73,6 +75,14 @@ public class CameraEncoder {
 
     public void setVideoSize(int width, int height) {
         this.videoSize = new Size(width, height);
+    }
+
+    public int getSensorOrientation() {
+        return sensorOrientation;
+    }
+
+    public int getLensFacing() {
+        return lensFacing;
     }
 
     public void startEncoding() {
@@ -154,6 +164,11 @@ public class CameraEncoder {
         try {
             Log.d(TAG, "Available cameras: " + Arrays.toString(cameraManager.getCameraIdList()));
             CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
+            Integer orientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
+            sensorOrientation = orientation != null ? orientation : 0;
+            Integer facing = characteristics.get(CameraCharacteristics.LENS_FACING);
+            lensFacing = facing != null ? facing : CameraCharacteristics.LENS_FACING_BACK;
+            Log.d(TAG, "Camera sensor orientation: " + sensorOrientation + ", lensFacing=" + lensFacing);
             android.hardware.camera2.params.StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if (map != null) {
                 Size[] sizes = map.getOutputSizes(Surface.class);
@@ -219,7 +234,7 @@ public class CameraEncoder {
                                 Log.d(TAG, "Capture session configured, repeating request started");
 
                                 if (onEncoderStartedListener != null) {
-                                    onEncoderStartedListener.onEncoderStarted(videoSize.getWidth(), videoSize.getHeight());
+                                    onEncoderStartedListener.onEncoderStarted(videoSize.getWidth(), videoSize.getHeight(), sensorOrientation, lensFacing);
                                 }
 
                                 new Thread(encodeOutputThread).start();
