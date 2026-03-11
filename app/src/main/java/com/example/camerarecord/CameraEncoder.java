@@ -47,6 +47,7 @@ public class CameraEncoder {
     private String cameraId = "1";
     private Size videoSize = new Size(1280, 720);
     private Surface encoderSurface;
+    private GlCameraFrameProcessor glFrameProcessor;
     private int sensorOrientation = 0;
     private int lensFacing = CameraCharacteristics.LENS_FACING_BACK;
 
@@ -157,12 +158,6 @@ public class CameraEncoder {
             format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL);
             
-            // 前置摄像头旋转90度，使其变为竖屏视频
-            if ("1".equals(cameraId)) {
-                format.setInteger(MediaFormat.KEY_ROTATION, 90);
-                Log.d(TAG, "Setting rotation to 90 for front camera");
-            }
-
             mediaCodec = MediaCodec.createEncoderByType(MIME_TYPE);
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
             encoderSurface = mediaCodec.createInputSurface();
@@ -237,6 +232,14 @@ public class CameraEncoder {
             }
 
             setupMediaCodec();
+            int outputRotation = "1".equals(cameraId) ? 90 : 0;
+            glFrameProcessor = new GlCameraFrameProcessor(
+                    encoderSurface,
+                    videoSize.getWidth(),
+                    videoSize.getHeight(),
+                    outputRotation
+            );
+            glFrameProcessor.start();
             cameraManager.openCamera(cameraId, stateCallback, backgroundHandler);
         } catch (CameraAccessException e) {
             Log.e(TAG, "Error opening camera", e);
@@ -265,15 +268,16 @@ public class CameraEncoder {
 
     private void createCaptureSession() {
         try {
+            Surface cameraInputSurface = glFrameProcessor != null ? glFrameProcessor.getCameraInputSurface() : encoderSurface;
             cameraDevice.createCaptureSession(
-                    Arrays.asList(encoderSurface),
+                    Arrays.asList(cameraInputSurface),
                     new CameraCaptureSession.StateCallback() {
                         @Override
                         public void onConfigured(@NonNull CameraCaptureSession session) {
                             captureSession = session;
                             try {
                                 CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-                                builder.addTarget(encoderSurface);
+                                builder.addTarget(cameraInputSurface);
 
                                 builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
                                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
@@ -367,6 +371,10 @@ public class CameraEncoder {
         if (captureSession != null) {
             captureSession.close();
             captureSession = null;
+        }
+        if (glFrameProcessor != null) {
+            glFrameProcessor.stop();
+            glFrameProcessor = null;
         }
         if (cameraDevice != null) {
             cameraDevice.close();
