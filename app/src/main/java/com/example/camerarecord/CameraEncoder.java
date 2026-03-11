@@ -12,7 +12,6 @@ import android.hardware.camera2.CaptureRequest;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
-import android.media.MediaMuxer;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
@@ -22,8 +21,6 @@ import android.view.Surface;
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 
-import java.io.File;
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 
@@ -39,7 +36,6 @@ public class CameraEncoder {
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
     private MediaCodec mediaCodec;
-    private MediaMuxer mediaMuxer;
     private HandlerThread backgroundThread;
     private Handler backgroundHandler;
 
@@ -51,11 +47,13 @@ public class CameraEncoder {
     private int sensorOrientation = 0;
     private int lensFacing = CameraCharacteristics.LENS_FACING_BACK;
 
-    private int videoTrackIndex = -1;
-    private boolean muxerStarted = false;
-    private String outputPath;
     private byte[] csd0;
     private byte[] csd1;
+    private OnEncodedDataCallback onEncodedDataCallback;
+
+    public interface OnEncodedDataCallback {
+        void onEncodedData(byte[] data, int flags, long presentationTimeUs);
+    }
 
     public CameraEncoder(Context context) {
         this.context = context;
@@ -77,17 +75,16 @@ public class CameraEncoder {
         return lensFacing;
     }
 
-    public String getOutputPath() {
-        return outputPath;
+    public void setOnEncodedDataCallback(OnEncodedDataCallback callback) {
+        this.onEncodedDataCallback = callback;
     }
 
-    public void startEncoding(String outputPath) {
+    public void startEncoding() {
         if (isEncoding) {
             Log.w(TAG, "startEncoding called while encoder is already running");
             return;
         }
-        this.outputPath = outputPath;
-        Log.d(TAG, "startEncoding: cameraId=" + cameraId + ", size=" + videoSize.getWidth() + "x" + videoSize.getHeight() + ", output=" + outputPath);
+        Log.d(TAG, "startEncoding: cameraId=" + cameraId + ", size=" + videoSize.getWidth() + "x" + videoSize.getHeight());
         startBackgroundThread();
         openCamera();
         isEncoding = true;
@@ -115,38 +112,6 @@ public class CameraEncoder {
             } catch (InterruptedException e) {
                 Log.e(TAG, "Error stopping background thread", e);
             }
-        }
-    }
-
-    private void setupMediaMuxer() {
-        if (outputPath != null) {
-            try {
-                File outputFile = new File(outputPath);
-                File parentDir = outputFile.getParentFile();
-                if (parentDir != null && !parentDir.exists()) {
-                    parentDir.mkdirs();
-                }
-                mediaMuxer = new MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-                Log.d(TAG, "MediaMuxer created: " + outputPath);
-            } catch (IOException e) {
-                Log.e(TAG, "Error creating MediaMuxer", e);
-            }
-        }
-    }
-
-    private void stopMediaMuxer() {
-        if (mediaMuxer != null) {
-            try {
-                if (muxerStarted) {
-                    mediaMuxer.stop();
-                }
-                mediaMuxer.release();
-            } catch (Exception e) {
-                Log.e(TAG, "Error stopping MediaMuxer", e);
-            }
-            mediaMuxer = null;
-            muxerStarted = false;
-            videoTrackIndex = -1;
         }
     }
 
@@ -187,8 +152,6 @@ public class CameraEncoder {
             Log.e(TAG, "Camera permission not granted");
             return;
         }
-
-        setupMediaMuxer();
 
         cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
         try {
@@ -333,17 +296,11 @@ public class CameraEncoder {
                             Log.d(TAG, "CSD-1 size: " + csd1.length);
                         }
                         
-                        if (mediaMuxer != null && !muxerStarted) {
-                            MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, videoSize.getWidth(), videoSize.getHeight());
-                            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-                            videoTrackIndex = mediaMuxer.addTrack(format);
-                            mediaMuxer.start();
-                            muxerStarted = true;
-                            Log.d(TAG, "Muxer started, trackIndex: " + videoTrackIndex);
-                        }
                     } else if (outputBufferIndex >= 0) {
                         ByteBuffer outputBuffer = mediaCodec.getOutputBuffer(outputBufferIndex);
                         if (outputBuffer != null && bufferInfo.size > 0) {
+                            outputBuffer.position(bufferInfo.offset);
+                            outputBuffer.limit(bufferInfo.offset + bufferInfo.size);
                             byte[] data = new byte[bufferInfo.size];
                             outputBuffer.get(data);
 
@@ -355,8 +312,16 @@ public class CameraEncoder {
                                 Log.d(TAG, "Encoded frame: " + frameCount + ", size: " + bufferInfo.size + ", keyFrame: " + isKeyFrame);
                             }
 
-                            if (muxerStarted && videoTrackIndex >= 0) {
-                                mediaMuxer.writeSampleData(videoTrackIndex, outputBuffer, bufferInfo);
+                            if (onEncodedDataCallback != null) {
+                                if (isKeyFrame && csd0 != null && csd1 != null) {
+                                    byte[] keyFrameWithConfig = new byte[csd0.length + csd1.length + data.length];
+                                    System.arraycopy(csd0, 0, keyFrameWithConfig, 0, csd0.length);
+                                    System.arraycopy(csd1, 0, keyFrameWithConfig, csd0.length, csd1.length);
+                                    System.arraycopy(data, 0, keyFrameWithConfig, csd0.length + csd1.length, data.length);
+                                    onEncodedDataCallback.onEncodedData(keyFrameWithConfig, bufferInfo.flags, bufferInfo.presentationTimeUs);
+                                } else {
+                                    onEncodedDataCallback.onEncodedData(data, bufferInfo.flags, bufferInfo.presentationTimeUs);
+                                }
                             }
                         }
                         mediaCodec.releaseOutputBuffer(outputBufferIndex, false);
@@ -384,6 +349,5 @@ public class CameraEncoder {
             cameraDevice = null;
         }
         stopMediaCodec();
-        stopMediaMuxer();
     }
 }
