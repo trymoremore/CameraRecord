@@ -12,8 +12,7 @@ import android.hardware.camera2.CaptureRequest;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
-import android.media.MediaRecorder;
-import android.os.Build;
+import android.media.MediaMuxer;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
@@ -23,6 +22,8 @@ import android.view.Surface;
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 
+import java.io.File;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 
@@ -38,6 +39,7 @@ public class CameraEncoder {
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
     private MediaCodec mediaCodec;
+    private MediaMuxer mediaMuxer;
     private HandlerThread backgroundThread;
     private Handler backgroundHandler;
 
@@ -48,27 +50,14 @@ public class CameraEncoder {
     private int sensorOrientation = 0;
     private int lensFacing = CameraCharacteristics.LENS_FACING_BACK;
 
-    private OnEncodedDataListener onEncodedDataListener;
-    private OnEncoderStartedListener onEncoderStartedListener;
-
-    public interface OnEncodedDataListener {
-        void onEncodedData(byte[] data, int flags, boolean isKeyFrame);
-    }
-
-    public interface OnEncoderStartedListener {
-        void onEncoderStarted(int width, int height, int sensorOrientation, int lensFacing);
-    }
+    private int videoTrackIndex = -1;
+    private boolean muxerStarted = false;
+    private String outputPath;
+    private byte[] csd0;
+    private byte[] csd1;
 
     public CameraEncoder(Context context) {
         this.context = context;
-    }
-
-    public void setOnEncodedDataListener(OnEncodedDataListener listener) {
-        this.onEncodedDataListener = listener;
-    }
-
-    public void setOnEncoderStartedListener(OnEncoderStartedListener listener) {
-        this.onEncoderStartedListener = listener;
     }
 
     public void setCameraId(String cameraId) {
@@ -87,12 +76,17 @@ public class CameraEncoder {
         return lensFacing;
     }
 
-    public void startEncoding() {
+    public String getOutputPath() {
+        return outputPath;
+    }
+
+    public void startEncoding(String outputPath) {
         if (isEncoding) {
             Log.w(TAG, "startEncoding called while encoder is already running");
             return;
         }
-        Log.d(TAG, "startEncoding: cameraId=" + cameraId + ", requested size=" + videoSize.getWidth() + "x" + videoSize.getHeight());
+        this.outputPath = outputPath;
+        Log.d(TAG, "startEncoding: cameraId=" + cameraId + ", size=" + videoSize.getWidth() + "x" + videoSize.getHeight() + ", output=" + outputPath);
         startBackgroundThread();
         openCamera();
         isEncoding = true;
@@ -123,6 +117,38 @@ public class CameraEncoder {
         }
     }
 
+    private void setupMediaMuxer() {
+        if (outputPath != null) {
+            try {
+                File outputFile = new File(outputPath);
+                File parentDir = outputFile.getParentFile();
+                if (parentDir != null && !parentDir.exists()) {
+                    parentDir.mkdirs();
+                }
+                mediaMuxer = new MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+                Log.d(TAG, "MediaMuxer created: " + outputPath);
+            } catch (IOException e) {
+                Log.e(TAG, "Error creating MediaMuxer", e);
+            }
+        }
+    }
+
+    private void stopMediaMuxer() {
+        if (mediaMuxer != null) {
+            try {
+                if (muxerStarted) {
+                    mediaMuxer.stop();
+                }
+                mediaMuxer.release();
+            } catch (Exception e) {
+                Log.e(TAG, "Error stopping MediaMuxer", e);
+            }
+            mediaMuxer = null;
+            muxerStarted = false;
+            videoTrackIndex = -1;
+        }
+    }
+
     private void setupMediaCodec() {
         try {
             MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, videoSize.getWidth(), videoSize.getHeight());
@@ -130,7 +156,12 @@ public class CameraEncoder {
             format.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE);
             format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL);
-            format.setInteger(MediaFormat.KEY_ROTATION, 180);
+            
+            // 前置摄像头旋转90度，使其变为竖屏视频
+            if ("1".equals(cameraId)) {
+                format.setInteger(MediaFormat.KEY_ROTATION, 90);
+                Log.d(TAG, "Setting rotation to 90 for front camera");
+            }
 
             mediaCodec = MediaCodec.createEncoderByType(MIME_TYPE);
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
@@ -138,7 +169,6 @@ public class CameraEncoder {
             mediaCodec.start();
 
             Log.d(TAG, "MediaCodec configured: " + videoSize.getWidth() + "x" + videoSize.getHeight());
-            Log.d(TAG, "MediaCodec format: " + format);
         } catch (Exception e) {
             Log.e(TAG, "Error setting up MediaCodec", e);
         }
@@ -163,41 +193,50 @@ public class CameraEncoder {
             return;
         }
 
+        setupMediaMuxer();
+
         cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
         try {
-            Log.d(TAG, "Available cameras: " + Arrays.toString(cameraManager.getCameraIdList()));
             CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
             Integer orientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
             sensorOrientation = orientation != null ? orientation : 0;
             Integer facing = characteristics.get(CameraCharacteristics.LENS_FACING);
             lensFacing = facing != null ? facing : CameraCharacteristics.LENS_FACING_BACK;
-            Log.d(TAG, "Camera sensor orientation: " + sensorOrientation + ", lensFacing=" + lensFacing);
+            
             android.hardware.camera2.params.StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if (map != null) {
-                Size[] sizes = map.getOutputSizes(MediaRecorder.class);
-                if (sizes == null || sizes.length == 0) {
-                    Log.w(TAG, "MediaRecorder output sizes unavailable, fallback to SurfaceTexture output sizes");
-                    sizes = map.getOutputSizes(android.graphics.SurfaceTexture.class);
-                }
+                Size[] sizes = map.getOutputSizes(android.graphics.SurfaceTexture.class);
                 if (sizes != null && sizes.length > 0) {
+                    boolean isFrontCamera = "1".equals(cameraId);
                     Size selected = null;
+                    
                     for (Size size : sizes) {
-                        if (selected == null || (size.getWidth() * size.getHeight()) > (selected.getWidth() * selected.getHeight())) {
-                            selected = size;
+                        boolean isPortrait = size.getHeight() > size.getWidth();
+                        if (isFrontCamera) {
+                            if (isPortrait && (selected == null || size.getWidth() <= videoSize.getWidth())) {
+                                if (selected == null || size.getWidth() > selected.getWidth()) {
+                                    selected = size;
+                                }
+                            }
+                        } else {
+                            if (!isPortrait && (selected == null || size.getWidth() <= videoSize.getWidth())) {
+                                if (selected == null || size.getWidth() > selected.getWidth()) {
+                                    selected = size;
+                                }
+                            }
                         }
                     }
-                    if (selected != null) {
-                        videoSize = selected;
-                    } else {
-                        videoSize = sizes[0];
+                    
+                    if (selected == null) {
+                        selected = videoSize;
                     }
+                    
+                    videoSize = selected;
                     Log.d(TAG, "Using video size: " + videoSize.getWidth() + "x" + videoSize.getHeight());
                 }
             }
 
             setupMediaCodec();
-
-            Log.d(TAG, "Opening camera id=" + cameraId + " on thread=" + Thread.currentThread().getName());
             cameraManager.openCamera(cameraId, stateCallback, backgroundHandler);
         } catch (CameraAccessException e) {
             Log.e(TAG, "Error opening camera", e);
@@ -207,21 +246,18 @@ public class CameraEncoder {
     private final CameraDevice.StateCallback stateCallback = new CameraDevice.StateCallback() {
         @Override
         public void onOpened(@NonNull CameraDevice camera) {
-            Log.d(TAG, "Camera opened: " + camera.getId());
             cameraDevice = camera;
             createCaptureSession();
         }
 
         @Override
         public void onDisconnected(@NonNull CameraDevice camera) {
-            Log.w(TAG, "Camera disconnected: " + camera.getId());
             camera.close();
             cameraDevice = null;
         }
 
         @Override
         public void onError(@NonNull CameraDevice camera, int error) {
-            Log.e(TAG, "Camera error: id=" + camera.getId() + ", errorCode=" + error);
             camera.close();
             cameraDevice = null;
         }
@@ -242,21 +278,8 @@ public class CameraEncoder {
                                 builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
                                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
 
-//                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-//                                    Integer rotateAndCropValue = CaptureRequest.SCALER_ROTATE_AND_CROP_90;
-//                                    if (rotateAndCropValue != null) {
-//                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-//                                            builder.set(CaptureRequest.SCALER_ROTATE_AND_CROP, rotateAndCropValue);
-//                                        }
-//                                    }
-//                                }
-
                                 captureSession.setRepeatingRequest(builder.build(), null, backgroundHandler);
-                                Log.d(TAG, "Capture session configured, repeating request started");
-
-                                if (onEncoderStartedListener != null) {
-                                    onEncoderStartedListener.onEncoderStarted(videoSize.getWidth(), videoSize.getHeight(), sensorOrientation, lensFacing);
-                                }
+                                Log.d(TAG, "Capture session configured");
 
                                 new Thread(encodeOutputThread).start();
                             } catch (CameraAccessException e) {
@@ -282,37 +305,61 @@ public class CameraEncoder {
             Log.d(TAG, "encodeOutputThread started");
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
             int frameCount = 0;
+            
             while (isEncoding) {
                 try {
                     int outputBufferIndex = mediaCodec.dequeueOutputBuffer(bufferInfo, 10000);
                     if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        Log.d(TAG, "Output format changed: " + mediaCodec.getOutputFormat());
+                        MediaFormat newFormat = mediaCodec.getOutputFormat();
+                        Log.d(TAG, "Output format changed: " + newFormat);
+                        
+                        if (newFormat.containsKey("csd-0")) {
+                            ByteBuffer bb = newFormat.getByteBuffer("csd-0");
+                            csd0 = new byte[bb.remaining()];
+                            bb.get(csd0);
+                            Log.d(TAG, "CSD-0 size: " + csd0.length);
+                        }
+                        if (newFormat.containsKey("csd-1")) {
+                            ByteBuffer bb = newFormat.getByteBuffer("csd-1");
+                            csd1 = new byte[bb.remaining()];
+                            bb.get(csd1);
+                            Log.d(TAG, "CSD-1 size: " + csd1.length);
+                        }
+                        
+                        if (mediaMuxer != null && !muxerStarted) {
+                            MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, videoSize.getWidth(), videoSize.getHeight());
+                            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+                            videoTrackIndex = mediaMuxer.addTrack(format);
+                            mediaMuxer.start();
+                            muxerStarted = true;
+                            Log.d(TAG, "Muxer started, trackIndex: " + videoTrackIndex);
+                        }
                     } else if (outputBufferIndex >= 0) {
                         ByteBuffer outputBuffer = mediaCodec.getOutputBuffer(outputBufferIndex);
                         if (outputBuffer != null && bufferInfo.size > 0) {
-                            outputBuffer.position(bufferInfo.offset);
-                            outputBuffer.limit(bufferInfo.offset + bufferInfo.size);
                             byte[] data = new byte[bufferInfo.size];
                             outputBuffer.get(data);
 
                             boolean isKeyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
                             boolean isCodecConfig = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
+                            
                             frameCount++;
-                            Log.d(TAG, "Encoded frame: " + frameCount + ", size: " + bufferInfo.size + ", keyFrame: " + isKeyFrame + ", codecConfig=" + isCodecConfig + ", pts=" + bufferInfo.presentationTimeUs + ", offset=" + bufferInfo.offset);
+                            if (frameCount % 30 == 0) {
+                                Log.d(TAG, "Encoded frame: " + frameCount + ", size: " + bufferInfo.size + ", keyFrame: " + isKeyFrame);
+                            }
 
-                            if (onEncodedDataListener != null) {
-                                onEncodedDataListener.onEncodedData(data, bufferInfo.flags, isKeyFrame);
+                            if (muxerStarted && videoTrackIndex >= 0) {
+                                mediaMuxer.writeSampleData(videoTrackIndex, outputBuffer, bufferInfo);
                             }
                         }
                         mediaCodec.releaseOutputBuffer(outputBufferIndex, false);
-                    } else if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                        Log.v(TAG, "Encoder output not ready yet");
                     }
                 } catch (Exception e) {
                     Log.e(TAG, "Error during encoding", e);
                 }
             }
-            Log.d(TAG, "encodeOutputThread stopped");
+            
+            Log.d(TAG, "encodeOutputThread stopped, total frames: " + frameCount);
         }
     };
 
@@ -326,5 +373,6 @@ public class CameraEncoder {
             cameraDevice = null;
         }
         stopMediaCodec();
+        stopMediaMuxer();
     }
 }
