@@ -36,6 +36,7 @@ public class GlCameraFrameProcessor {
             "uniform samplerExternalOES sTexture;\n" +
             "void main() {\n" +
             "  gl_FragColor = texture2D(sTexture, vTextureCoord);\n" +
+            "  gl_FragColor.r = 1.0;\n" +
             "}\n";
 
     private final Surface codecInputSurface;
@@ -124,7 +125,7 @@ public class GlCameraFrameProcessor {
 
         Matrix.setIdentityM(rotateMatrix, 0);
         Matrix.translateM(rotateMatrix, 0, 0.5f, 0.5f, 0f);
-        Matrix.rotateM(rotateMatrix, 0, rotationDegrees, 0f, 0f, 1f);
+        Matrix.rotateM(rotateMatrix, 0, (float)(180), 0f, 0f, 1f);
         Matrix.translateM(rotateMatrix, 0, -0.5f, -0.5f, 0f);
 
         while (running) {
@@ -234,7 +235,7 @@ public class GlCameraFrameProcessor {
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
 
         cameraSurfaceTexture = new SurfaceTexture(oesTextureId);
-        cameraSurfaceTexture.setDefaultBufferSize(width, height);
+        cameraSurfaceTexture.setDefaultBufferSize(height, width);
         cameraSurfaceTexture.setOnFrameAvailableListener(surfaceTexture -> {
             synchronized (frameSyncObject) {
                 frameAvailable = true;

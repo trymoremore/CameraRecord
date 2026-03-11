@@ -229,6 +229,9 @@ public class CameraEncoder {
                     videoSize = selected;
                     Log.d(TAG, "Using video size: " + videoSize.getWidth() + "x" + videoSize.getHeight());
                 }
+
+                videoSize = new Size(videoSize.getHeight(), videoSize.getWidth());
+
             }
 
             setupMediaCodec();
