@@ -3,7 +3,6 @@ package com.example.camerarecord;
 import android.Manifest;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
-import android.os.Environment;
 import android.util.Log;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -15,11 +14,6 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
-import java.io.File;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
-
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
     private static final int REQUEST_CAMERA_PERMISSION = 100;
@@ -27,6 +21,7 @@ public class MainActivity extends AppCompatActivity {
     private SurfaceView surfaceView;
     private Button btnStart;
     private CameraEncoder cameraEncoder;
+    private H264Decoder h264Decoder;
 
     private boolean isRunning = false;
 
@@ -87,27 +82,26 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private String generateOutputPath() {
-        String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
-        String fileName = "VID_" + timestamp + ".mp4";
-        
-        File dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES);
-        if (dir == null) {
-            dir = getFilesDir();
-        }
-        
-        return new File(dir, fileName).getAbsolutePath();
-    }
-
     private void startCamera() {
-        String outputPath = generateOutputPath();
-        Log.d(TAG, "Output file: " + outputPath);
+        SurfaceHolder holder = surfaceView.getHolder();
+        if (holder.getSurface() == null || !holder.getSurface().isValid()) {
+            Log.w(TAG, "Surface is invalid, skip start");
+            return;
+        }
+
+        h264Decoder = new H264Decoder();
+        h264Decoder.startDecoding(null, holder.getSurface());
 
         cameraEncoder = new CameraEncoder(this);
         cameraEncoder.setCameraId("1");
+        cameraEncoder.setOnEncodedDataCallback((data, flags, presentationTimeUs) -> {
+            if (h264Decoder != null && h264Decoder.isDecoding()) {
+                h264Decoder.feedData(data, flags);
+            }
+        });
         
         Log.d(TAG, "Starting encoder...");
-        cameraEncoder.startEncoding(outputPath);
+        cameraEncoder.startEncoding();
 
         isRunning = true;
         btnStart.setText("Stop");
@@ -115,10 +109,13 @@ public class MainActivity extends AppCompatActivity {
 
     private void stopCamera() {
         if (cameraEncoder != null) {
-            String savedPath = cameraEncoder.getOutputPath();
             cameraEncoder.stopEncoding();
             cameraEncoder = null;
-            Log.d(TAG, "Video saved to: " + savedPath);
+        }
+
+        if (h264Decoder != null) {
+            h264Decoder.stopDecoding();
+            h264Decoder = null;
         }
 
         isRunning = false;
