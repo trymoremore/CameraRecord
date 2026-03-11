@@ -27,6 +27,7 @@ public class GlCameraFrameProcessor {
             "void main() {\n" +
             "  gl_Position = aPosition;\n" +
             "  vTextureCoord = (uTexMatrix * aTextureCoord).xy;\n" +
+            "  vTextureCoord.y = 1.0 - vTextureCoord.y;\n" +
             "}\n";
 
     private static final String FRAGMENT_SHADER =
@@ -36,7 +37,7 @@ public class GlCameraFrameProcessor {
             "uniform samplerExternalOES sTexture;\n" +
             "void main() {\n" +
             "  gl_FragColor = texture2D(sTexture, vTextureCoord);\n" +
-            "  gl_FragColor.r = 1.0;\n" +
+//            "  gl_FragColor.r = 1.0;\n" +
             "}\n";
 
     private final Surface codecInputSurface;
