@@ -12,6 +12,8 @@ import android.hardware.camera2.CaptureRequest;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
+import android.media.MediaRecorder;
+import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
@@ -128,6 +130,7 @@ public class CameraEncoder {
             format.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE);
             format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL);
+            format.setInteger(MediaFormat.KEY_ROTATION, 180);
 
             mediaCodec = MediaCodec.createEncoderByType(MIME_TYPE);
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
@@ -171,13 +174,22 @@ public class CameraEncoder {
             Log.d(TAG, "Camera sensor orientation: " + sensorOrientation + ", lensFacing=" + lensFacing);
             android.hardware.camera2.params.StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if (map != null) {
-                Size[] sizes = map.getOutputSizes(Surface.class);
+                Size[] sizes = map.getOutputSizes(MediaRecorder.class);
+                if (sizes == null || sizes.length == 0) {
+                    Log.w(TAG, "MediaRecorder output sizes unavailable, fallback to SurfaceTexture output sizes");
+                    sizes = map.getOutputSizes(android.graphics.SurfaceTexture.class);
+                }
                 if (sizes != null && sizes.length > 0) {
+                    Size selected = null;
                     for (Size size : sizes) {
-                        if (size.getWidth() <= 1280 && size.getHeight() <= 720) {
-                            videoSize = size;
-                            break;
+                        if (selected == null || (size.getWidth() * size.getHeight()) > (selected.getWidth() * selected.getHeight())) {
+                            selected = size;
                         }
+                    }
+                    if (selected != null) {
+                        videoSize = selected;
+                    } else {
+                        videoSize = sizes[0];
                     }
                     Log.d(TAG, "Using video size: " + videoSize.getWidth() + "x" + videoSize.getHeight());
                 }
@@ -229,6 +241,15 @@ public class CameraEncoder {
 
                                 builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
                                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+
+//                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+//                                    Integer rotateAndCropValue = CaptureRequest.SCALER_ROTATE_AND_CROP_90;
+//                                    if (rotateAndCropValue != null) {
+//                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+//                                            builder.set(CaptureRequest.SCALER_ROTATE_AND_CROP, rotateAndCropValue);
+//                                        }
+//                                    }
+//                                }
 
                                 captureSession.setRepeatingRequest(builder.build(), null, backgroundHandler);
                                 Log.d(TAG, "Capture session configured, repeating request started");

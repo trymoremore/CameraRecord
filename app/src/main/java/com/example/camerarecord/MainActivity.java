@@ -141,7 +141,7 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, "Decoder surface valid: " + (decoderSurface != null && decoderSurface.isValid()));
         
         float correctionRotation = calculatePreviewRotationDegrees();
-        surfaceView.setRotation(correctionRotation);
+//        surfaceView.setRotation(correctionRotation);
         Log.d(TAG, "Applied surface rotation correction: " + correctionRotation + " degrees");
 
         h264Decoder = new H264Decoder();
